@@ -1,0 +1,192 @@
+{
+  "version": "2.1.0",
+  "$schema": "https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.5.json",
+  "runs": [
+    {
+      "results": [
+        {
+          "ruleId": "C26495",
+          "message": {
+            "text": "Variable 'CChatAppClientDlg::m_socket' is uninitialized. Always initialize a member variable (type.6)."
+          },
+          "analysisTarget": {
+            "uri": "file:///f:/vscmccs/chatappclient/chatappclientdlg.cpp"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file:///F:/VSCMCCS/ChatAppClient/ChatAppClientDlg.cpp"
+                },
+                "region": {
+                  "startLine": 58,
+                  "startColumn": 20
+                }
+              },
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "CChatAppClientDlg::{ctor}",
+                  "decoratedName": "??0CChatAppClientDlg@@QEAA@PEAVCWnd@@@Z",
+                  "kind": "function"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "targetSymbol": "CChatAppClientDlg::m_socket"
+          }
+        },
+        {
+          "ruleId": "C26495",
+          "message": {
+            "text": "Variable 'Msg::sender' is uninitialized. Always initialize a member variable (type.6)."
+          },
+          "analysisTarget": {
+            "uri": "file:///f:/vscmccs/chatappclient/chatappclientdlg.cpp"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file:///F:/VSCMCCS/ChatAppClient/Struct.h"
+                },
+                "region": {
+                  "startLine": 15,
+                  "startColumn": 1
+                }
+              },
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "Msg::{ctor}",
+                  "decoratedName": "??0Msg@@QEAA@XZ",
+                  "kind": "function"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "targetSymbol": "Msg::sender"
+          }
+        },
+        {
+          "ruleId": "C26495",
+          "message": {
+            "text": "Variable 'Msg::message' is uninitialized. Always initialize a member variable (type.6)."
+          },
+          "analysisTarget": {
+            "uri": "file:///f:/vscmccs/chatappclient/chatappclientdlg.cpp"
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "file:///F:/VSCMCCS/ChatAppClient/Struct.h"
+                },
+                "region": {
+                  "startLine": 15,
+                  "startColumn": 1
+                }
+              },
+              "logicalLocations": [
+                {
+                  "fullyQualifiedName": "Msg::{ctor}",
+                  "decoratedName": "??0Msg@@QEAA@XZ",
+                  "kind": "function"
+                }
+              ]
+            }
+          ],
+          "properties": {
+            "targetSymbol": "Msg::message"
+          }
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "PREfast",
+          "fullName": "MSVC Code Analysis",
+          "version": "14.44.35217.0",
+          "informationUri": "https://aka.ms/cpp/ca"
+        }
+      },
+      "invocations": [
+        {
+          "executionSuccessful": true
+        }
+      ],
+      "artifacts": [
+        {
+          "location": {
+            "uri": "file:///f:/vscmccs/chatappclient/chatappclientdlg.cpp"
+          },
+          "roles": [
+            "analysisTarget",
+            "resultFile"
+          ],
+          "hashes": {
+            "sha-256": "3cab4e56fb1bda2c0fd2dc277b0171adc43f8aa253781511a2703ca91f4e4568"
+          }
+        },
+        {
+          "location": {
+            "uri": "file:///F:/VSCMCCS/ChatAppClient/Struct.h"
+          },
+          "roles": [
+            "resultFile"
+          ],
+          "hashes": {
+            "sha-256": "91b7726ed3240bad23a5ddf40934e1bf5228d6082d3e121ebffc30702d253af1"
+          }
+        },
+        {
+          "location": {
+            "uri": "file:///f:/vscmccs/chatappclient/pch.h"
+          },
+          "hashes": {
+            "sha-256": "c2d8c468b0dd828eaa49a609c5e54ebca95ea4d2de3cd390e968e01c5d7f79ed"
+          }
+        },
+        {
+          "location": {
+            "uri": "file:///f:/vscmccs/chatappclient/framework.h"
+          },
+          "hashes": {
+            "sha-256": "3fbdf2536ce3b71811d81172bb1ccc2d58b44b569326433f3ca10477e724c4a4"
+          }
+        },
+        {
+          "location": {
+            "uri": "file:///f:/vscmccs/chatappclient/targetver.h"
+          },
+          "hashes": {
+            "sha-256": "a2761fdbd4c8925741ddea678ee8398de930207e447666bc6a76d5f72684c04f"
+          }
+        },
+        {
+          "location": {
+            "uri": "file:///f:/vscmccs/chatappclient/chatappclient.h"
+          },
+          "hashes": {
+            "sha-256": "b387575ab27071a5488e0b1c6fcf0c16f774997562a25e63b124f2e6965dcbaa"
+          }
+        },
+        {
+          "location": {
+            "uri": "file:///f:/vscmccs/chatappclient/resource.h"
+          },
+          "hashes": {
+            "sha-256": "4e0f21605653d12f8268d35bebf1ec7a805f2cdc512c80c6611dde6074ed1502"
+          }
+        },
+        {
+          "location": {
+            "uri": "file:///f:/vscmccs/chatappclient/chatappclientdlg.h"
+          },
+          "hashes": {
+            "sha-256": "dd8a981f376b4fe0bb4a16a8dd90667e7d0c0e3fa752141b8143815de22a0fe7"
+          }
+        }
+      ]
+    }
+  ]
+}
