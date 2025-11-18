@@ -1,0 +1,10 @@
+﻿  ChatAppService.cpp
+F:\VSCMCCS\WindowServiceChatAppServer\ChatAppService.cpp(212,35): warning C4244: '=': conversion from 'ULONGLONG' to 'DWORD', possible loss of data
+F:\VSCMCCS\WindowServiceChatAppServer\ChatAppService.cpp(248,37): warning C4244: '=': conversion from 'ULONGLONG' to 'DWORD', possible loss of data
+F:\VSCMCCS\WindowServiceChatAppServer\ChatAppService.cpp(295,35): warning C4244: '=': conversion from 'ULONGLONG' to 'DWORD', possible loss of data
+F:\VSCMCCS\WindowServiceChatAppServer\ChatAppService.cpp(330,37): warning C4244: '=': conversion from 'ULONGLONG' to 'DWORD', possible loss of data
+F:\VSCMCCS\WindowServiceChatAppServer\ChatAppService.cpp(392,20): warning C4244: 'initializing': conversion from 'ULONGLONG' to 'DWORD', possible loss of data
+F:\VSCMCCS\WindowServiceChatAppServer\ChatAppService.cpp(481,20): warning C4244: 'initializing': conversion from 'ULONGLONG' to 'DWORD', possible loss of data
+  WindowServiceChatAppServer.cpp
+LINK : warning LNK4098: defaultlib 'LIBCMT' conflicts with use of other libs; use /NODEFAULTLIB:library
+  WindowServiceChatAppServer.vcxproj -> F:\VSCMCCS\WindowServiceChatAppServer\Debug\WindowServiceChatAppServer.exe
