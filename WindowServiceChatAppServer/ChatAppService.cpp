@@ -16,6 +16,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #include <sqlite3.h>
 #pragma comment(lib, "sqlite3.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 using namespace std;
 
@@ -37,6 +38,22 @@ static int RecvAll(SOCKET s, void *buf, int len)
 		total += got;
 	}
 	return total;
+}
+
+static bool SendAll(SOCKET s, const void *buf, int len)
+{
+	const char *p = static_cast<const char *>(buf);
+	int total = 0;
+	while (total < len)
+	{
+		int sent = send(s, p + total, len - total, 0);
+		if (sent == SOCKET_ERROR)
+		{
+			return false;
+		}
+		total += sent;
+	}
+	return true;
 }
 
 CChatServerService::CChatServerService()
@@ -761,6 +778,86 @@ void CChatServerService::StopServer()
 	OutputDebugStringW(L"Server stopped\n");
 }
 
+BOOL CChatServerService::HashPassword(const std::wstring& password, std::wstring& hash)
+{
+	BCRYPT_ALG_HANDLE hAlg = NULL;
+	BCRYPT_HASH_HANDLE hHash = NULL;
+	NTSTATUS status;
+	DWORD cbHash = 0, cbData = 0;
+	PBYTE pbHash = NULL;
+	BOOL result = FALSE;
+
+	// Open an algorithm handle
+	if (!BCRYPT_SUCCESS(status = BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_SHA256_ALGORITHM, NULL, 0)))
+	{
+		LogError(L"BCryptOpenAlgorithmProvider failed");
+		return FALSE;
+	}
+
+	// Get the size of the hash
+	if (!BCRYPT_SUCCESS(status = BCryptGetProperty(hAlg, BCRYPT_HASH_LENGTH, (PBYTE)&cbHash, sizeof(DWORD), &cbData, 0)))
+	{
+		LogError(L"BCryptGetProperty failed");
+		goto cleanup;
+	}
+
+	pbHash = (PBYTE)HeapAlloc(GetProcessHeap(), 0, cbHash);
+	if (NULL == pbHash)
+	{
+		LogError(L"HeapAlloc failed");
+		goto cleanup;
+	}
+
+	// Create a hash handle
+	if (!BCRYPT_SUCCESS(status = BCryptCreateHash(hAlg, &hHash, NULL, 0, NULL, 0, 0)))
+	{
+		LogError(L"BCryptCreateHash failed");
+		goto cleanup;
+	}
+
+	// Hash the password
+	if (!BCRYPT_SUCCESS(status = BCryptHashData(hHash, (PBYTE)password.c_str(), (ULONG)(password.length() * sizeof(wchar_t)), 0)))
+	{
+		LogError(L"BCryptHashData failed");
+		goto cleanup;
+	}
+
+	// Finish the hash
+	if (!BCRYPT_SUCCESS(status = BCryptFinishHash(hHash, pbHash, cbHash, 0)))
+	{
+		LogError(L"BCryptFinishHash failed");
+		goto cleanup;
+	}
+
+	// Convert hash bytes to a hex string
+	wchar_t temp[3];
+	for (DWORD i = 0; i < cbHash; i++)
+	{
+		swprintf_s(temp, 3, L"%02x", pbHash[i]);
+		hash.append(temp);
+	}
+
+	result = TRUE;
+
+cleanup:
+	if (hHash) BCryptDestroyHash(hHash);
+	if (pbHash) HeapFree(GetProcessHeap(), 0, pbHash);
+	if (hAlg) BCryptCloseAlgorithmProvider(hAlg, 0);
+
+	return result;
+}
+
+BOOL CChatServerService::VerifyPassword(const std::wstring& password, const std::wstring& storedHash)
+{
+	std::wstring hashToVerify;
+	if (HashPassword(password, hashToVerify))
+	{
+		return hashToVerify == storedHash;
+	}
+	return FALSE;
+}
+
+
 DWORD WINAPI CChatServerService::AcceptThreadProc(LPVOID pParam)
 {
 	CChatServerService *pService = (CChatServerService *)pParam;
@@ -803,88 +900,40 @@ DWORD WINAPI CChatServerService::AcceptThreadProc(LPVOID pParam)
 // Client thread
 DWORD WINAPI CChatServerService::ClientThreadProc(LPVOID pParam)
 {
-	ClientInfo *pClientInfo = (ClientInfo *)pParam;
-	CChatServerService *pService = (CChatServerService *)pClientInfo->pDlg;
+	ClientInfo* pClientInfo = (ClientInfo*)pParam;
+	CChatServerService* pService = (CChatServerService*)pClientInfo->pDlg;
 
 	while (true)
 	{
-		int header = 0;
+		PacketHeader header;
 		int ret = RecvAll(pClientInfo->clientSocket, &header, sizeof(header));
 		if (ret <= 0)
 		{
 			break;
 		}
 
-		Msg msg = {};
-		ClientCommand command = ClientCommand::CMD_PRIVATE_MESSAGE;
-		bool headerIsCommand = (header >= (int)ClientCommand::CMD_LOGIN && header <= (int)ClientCommand::CMD_PRIVATE_MESSAGE);
-		if (headerIsCommand)
-		{
-			command = static_cast<ClientCommand>(header);
-			if (RecvAll(pClientInfo->clientSocket, &msg, sizeof(msg)) <= 0)
+		std::vector<char> buffer(header.size);
+		if (header.size > 0) {
+			ret = RecvAll(pClientInfo->clientSocket, buffer.data(), header.size);
+			if (ret <= 0)
 			{
 				break;
 			}
 		}
-		else
-		{
-			msg.targetUserId = header;
-			if (RecvAll(pClientInfo->clientSocket, ((char *)&msg) + sizeof(msg.targetUserId), sizeof(Msg) - sizeof(msg.targetUserId)) <= 0)
-			{
-				break;
-			}
-			command = ClientCommand::CMD_PRIVATE_MESSAGE;
-		}
+
+		Packet packet(header.type);
+		packet.SetBuffer(buffer.data(), header.size);
 
 		if (!pService->IsClientAuthenticated(pClientInfo->clientId))
 		{
-			if (command == ClientCommand::CMD_REGISTER)
+			if (header.type == PacketType::RegisterRequest)
 			{
-				std::wstring username(msg.sender);
-				std::wstring payload(msg.message);
+				std::wstring username, password, phone, email;
+				packet.ReadString(username);
+				packet.ReadString(password);
+				packet.ReadString(phone);
+				packet.ReadString(email);
 
-				auto trim = [](std::wstring &value)
-				{
-					const wchar_t *whitespace = L" \t\r\n";
-					const auto begin = value.find_first_not_of(whitespace);
-					if (begin == std::wstring::npos)
-					{
-						value.clear();
-						return;
-					}
-					const auto end = value.find_last_not_of(whitespace);
-					value = value.substr(begin, end - begin + 1);
-				};
-
-				trim(username);
-
-				std::wstring password;
-				std::wstring phone;
-				std::wstring email;
-
-				size_t firstSep = payload.find(L'|');
-				if (firstSep == std::wstring::npos)
-				{
-					password = payload;
-				}
-				else
-				{
-					password = payload.substr(0, firstSep);
-					size_t secondSep = payload.find(L'|', firstSep + 1);
-					if (secondSep == std::wstring::npos)
-					{
-						phone = payload.substr(firstSep + 1);
-					}
-					else
-					{
-						phone = payload.substr(firstSep + 1, secondSep - firstSep - 1);
-						email = payload.substr(secondSep + 1);
-					}
-				}
-
-				trim(password);
-				trim(phone);
-				trim(email);
 
 				if (username.empty() || password.empty())
 				{
@@ -893,32 +942,43 @@ DWORD WINAPI CChatServerService::ClientThreadProc(LPVOID pParam)
 				else
 				{
 					int newUserId = 0;
-					if (pService->RegisterUser(username.c_str(), password.c_str(), phone.c_str(), email.c_str(), newUserId))
+					std::wstring hashedPassword;
+					if (pService->HashPassword(password, hashedPassword))
 					{
-						pService->SendLoginResult(pClientInfo->clientSocket, 1, newUserId, username, L"Registration successful. You can now log in.");
-						std::wstring info = L"User registered: " + username;
-						pService->LogInfo(info.c_str());
+						if (pService->RegisterUser(username.c_str(), hashedPassword.c_str(), phone.c_str(), email.c_str(), newUserId))
+						{
+							pService->SendLoginResult(pClientInfo->clientSocket, 1, newUserId, username, L"Registration successful. You can now log in.");
+							std::wstring info = L"User registered: " + username;
+							pService->LogInfo(info.c_str());
+						}
+						else
+						{
+							pService->SendLoginResult(pClientInfo->clientSocket, 0, 0, L"", L"Registration failed. The username might already exist.");
+							std::wstring warn = L"Registration failed for user: " + username;
+							pService->LogError(warn.c_str());
+						}
 					}
 					else
 					{
-						pService->SendLoginResult(pClientInfo->clientSocket, 0, 0, L"", L"Registration failed. The username might already exist.");
-						std::wstring warn = L"Registration failed for user: " + username;
-						pService->LogError(warn.c_str());
+						pService->SendLoginResult(pClientInfo->clientSocket, 0, 0, L"", L"Registration failed due to a server-side hashing error.");
+						pService->LogError(L"Password hashing failed during registration.");
 					}
 				}
 				continue;
 			}
 
-			if (command != ClientCommand::CMD_LOGIN)
+			if (header.type != PacketType::LoginRequest)
 			{
 				pService->SendLoginResult(pClientInfo->clientSocket, 0, 0, L"", L"Authentication required before sending messages.");
 				continue;
 			}
 
-			std::wstring username(msg.sender);
-			std::wstring passwordHash(msg.message);
+			std::wstring username, password;
+			packet.ReadString(username);
+			packet.ReadString(password);
+			
 			int userId = 0;
-			if (pService->AuthenticateUser(username.c_str(), passwordHash.c_str(), userId))
+			if (pService->AuthenticateUser(username.c_str(), password.c_str(), userId))
 			{
 				UserAccount account = {};
 				account.userId = userId;
@@ -932,7 +992,7 @@ DWORD WINAPI CChatServerService::ClientThreadProc(LPVOID pParam)
 				wcsncpy_s(pClientInfo->username, account.username.c_str(), _TRUNCATE);
 				pClientInfo->userId = account.userId;
 				pService->SendLoginResult(pClientInfo->clientSocket, 1, account.userId, account.username, L"Login successful.");
-				pService->SendFriendListWithOnlineStatus(pClientInfo->clientSocket, account.userId);
+				pService->SendFriendList(pClientInfo->clientSocket, account.userId);
 				pService->BroadcastUserStatusUpdate();
 				std::wstring info = L"User authenticated: " + account.username;
 				pService->LogInfo(info.c_str());
@@ -945,56 +1005,62 @@ DWORD WINAPI CChatServerService::ClientThreadProc(LPVOID pParam)
 			continue;
 		}
 
-		if (command == ClientCommand::CMD_LOGIN || command == ClientCommand::CMD_REGISTER)
+		// Authenticated users only
+		switch (header.type)
 		{
-			continue;
-		}
-
-		int senderUserId = pService->GetUserIdForClient(pClientInfo->clientId);
-		msg.senderUserId = senderUserId;
-
-		if (command == ClientCommand::CMD_CHAT_HISTORY_REQUEST)
-		{
-			int friendUserId = msg.targetUserId;
-			if (friendUserId <= 0 && msg.message[0] != L'\0')
+			case PacketType::ChatHistoryRequest:
 			{
-				friendUserId = _wtoi(msg.message);
+				uint32_t friendUserId_u32;
+				packet.ReadUInt32(friendUserId_u32);
+				int friendUserId = static_cast<int>(friendUserId_u32);
+
+				int senderUserId = pService->GetUserIdForClient(pClientInfo->clientId);
+				std::vector<Msg> history;
+				if (senderUserId > 0 && friendUserId > 0 && pService->GetChatHistory(senderUserId, friendUserId, history))
+				{
+					pService->SendChatHistory(pClientInfo->clientSocket, friendUserId, history);
+				}
+				break;
 			}
-			std::vector<Msg> history;
-			if (senderUserId > 0 && friendUserId > 0 && pService->GetChatHistory(senderUserId, friendUserId, history))
+			case PacketType::ChatMessage:
 			{
-				pService->SendChatHistory(pClientInfo->clientSocket, friendUserId, history);
+				uint32_t receiverUserId_u32;
+				std::wstring message;
+				packet.ReadUInt32(receiverUserId_u32);
+				packet.ReadString(message);
+				int receiverUserId = static_cast<int>(receiverUserId_u32);
+
+				int senderUserId = pService->GetUserIdForClient(pClientInfo->clientId);
+				if (senderUserId > 0 && receiverUserId > 0)
+				{
+					pService->SaveMessageToDB(senderUserId, receiverUserId, message.c_str());
+
+					int receiverClientId = pService->FindClientIdByUserId(receiverUserId);
+					ClientInfo *receiverClient = pService->GetClientById(receiverClientId);
+					if (receiverClient != nullptr)
+					{
+						Packet chatPacket(PacketType::ChatMessage);
+						chatPacket.WriteUInt32(static_cast<uint32_t>(senderUserId));
+						chatPacket.WriteUInt32(static_cast<uint32_t>(receiverUserId));
+						std::wstring senderName = pService->GetUsernameForClient(pClientInfo->clientId);
+						chatPacket.WriteString(senderName);
+						chatPacket.WriteString(message);
+						chatPacket.WriteUInt32(static_cast<uint32_t>(std::time(nullptr)));
+						pService->SendPacket(receiverClient->clientSocket, chatPacket);
+					}
+				}
+				std::wstring senderName = pService->GetUsernameForClient(pClientInfo->clientId);
+				std::wstring logMsg = L"Private message from " + senderName + L": " + message;
+				pService->LogInfo(logMsg.c_str());
+				OutputDebugStringW(logMsg.c_str());
+				break;
 			}
-			continue;
-		}
-
-		std::wstring senderName = pService->GetUsernameForClient(pClientInfo->clientId);
-		if (!senderName.empty())
-		{
-			wcsncpy_s(msg.sender, senderName.c_str(), _TRUNCATE);
-		}
-
-		if (command != ClientCommand::CMD_PRIVATE_MESSAGE)
-		{
-			pService->LogError(L"Unsupported command received from client.");
-			continue;
-		}
-
-		int receiverUserId = msg.targetUserId;
-		if (senderUserId > 0 && receiverUserId > 0)
-		{
-			msg.time = std::time(nullptr);
-			pService->SaveMessageToDB(senderUserId, receiverUserId, msg.message);
-
-			int receiverClientId = pService->FindClientIdByUserId(receiverUserId);
-			if (receiverClientId != 0)
+			default:
 			{
-				pService->SendToClient(receiverClientId, msg);
+				pService->LogError(L"Unsupported command received from an authenticated client.");
+				break;
 			}
 		}
-		std::wstring logMsg = L"Private message from " + std::wstring(msg.sender) + L": " + std::wstring(msg.message);
-		pService->LogInfo(logMsg.c_str());
-		OutputDebugStringW(logMsg.c_str());
 	}
 
 	closesocket(pClientInfo->clientSocket);
@@ -1008,21 +1074,27 @@ DWORD WINAPI CChatServerService::ClientThreadProc(LPVOID pParam)
 	return 0;
 }
 
-void CChatServerService::SendToClient(int clientId, const Msg &msg)
+void CChatServerService::SendPacket(SOCKET socket, const Packet& packet)
 {
-	EnterCriticalSection(&m_csClients);
-	for (size_t i = 0; i < m_clients.size(); i++)
+	PacketHeader header;
+	header.type = packet.GetType();
+	header.size = static_cast<uint32_t>(packet.GetSize());
+
+	if (!SendAll(socket, &header, sizeof(header)))
 	{
-		if (m_clients[i]->clientId == clientId)
+		LogError(L"Failed to send packet header.");
+		return;
+	}
+
+	if (header.size > 0)
+	{
+		if (!SendAll(socket, packet.GetData(), static_cast<int>(header.size)))
 		{
-			int packetType = PACKET_MESSAGE;
-			send(m_clients[i]->clientSocket, (char *)&packetType, sizeof(int), 0);
-			send(m_clients[i]->clientSocket, (char *)&msg, sizeof(msg), 0);
-			break;
+			LogError(L"Failed to send packet payload.");
 		}
 	}
-	LeaveCriticalSection(&m_csClients);
 }
+
 
 void CChatServerService::RemoveClient(int clientId)
 {
@@ -1058,30 +1130,21 @@ void CChatServerService::BroadcastUserStatusUpdate()
 
 	for (const auto &target : targets)
 	{
-		SendFriendListWithOnlineStatus(target.first, target.second);
+		SendFriendList(target.first, target.second);
 	}
 }
 
 void CChatServerService::SendLoginResult(SOCKET clientSocket, int success, int userId, const std::wstring &username, const std::wstring &detail)
 {
-	LoginResult payload = {};
-	payload.success = success;
-	payload.userId = userId;
-	if (!username.empty())
-	{
-		wcsncpy_s(payload.username, username.c_str(), _TRUNCATE);
-	}
-	if (!detail.empty())
-	{
-		wcsncpy_s(payload.detail, detail.c_str(), _TRUNCATE);
-	}
-
-	int packetType = PACKET_LOGIN_RESULT;
-	send(clientSocket, (char *)&packetType, sizeof(int), 0);
-	send(clientSocket, (char *)&payload, sizeof(payload), 0);
+	Packet packet(PacketType::LoginResponse);
+	packet.WriteUInt32(success);
+	packet.WriteUInt32(userId);
+	packet.WriteString(username);
+	packet.WriteString(detail);
+	SendPacket(clientSocket, packet);
 }
 
-void CChatServerService::SendFriendListWithOnlineStatus(SOCKET clientSocket, int userId)
+void CChatServerService::SendFriendList(SOCKET clientSocket, int userId)
 {
 	std::vector<UserAccount> friends;
 	if (!GetFriendsList(userId, friends))
@@ -1089,50 +1152,44 @@ void CChatServerService::SendFriendListWithOnlineStatus(SOCKET clientSocket, int
 		return;
 	}
 
-	UserListUpdate update = {};
-	update.count = 0;
+	Packet packet(PacketType::FriendList);
+	packet.WriteUInt32(static_cast<uint32_t>(friends.size()));
 
 	for (const auto &friendAccount : friends)
 	{
-		if (update.count >= MAX_CLIENTS)
-		{
-			break;
-		}
-
 		int friendClientId = FindClientIdByUserId(friendAccount.userId);
-		update.users[update.count].userId = friendAccount.userId;
-		update.users[update.count].isOnline = friendClientId != 0 ? 1 : 0;
+		uint32_t isOnline = (friendClientId != 0) ? 1 : 0;
 
 		std::wstring displayName = friendAccount.username;
-		if (friendClientId == 0)
+		if (isOnline == 0)
 		{
-			displayName.append(L" (offline)");
+			displayName.append(L" (Offline)");
 		}
-		wcsncpy_s(update.users[update.count].username, displayName.c_str(), _TRUNCATE);
-		++update.count;
+
+		packet.WriteUInt32(friendAccount.userId);
+		packet.WriteString(displayName);
+		packet.WriteUInt32(isOnline);
 	}
 
-	int packetType = PACKET_USER_LIST;
-	send(clientSocket, (char *)&packetType, sizeof(int), 0);
-	send(clientSocket, (char *)&update, sizeof(update), 0);
+	SendPacket(clientSocket, packet);
 }
 
 void CChatServerService::SendChatHistory(SOCKET clientSocket, int friendUserId, const std::vector<Msg> &messages)
 {
-	ChatHistoryResponse *response = new ChatHistoryResponse();
-	response->friendUserId = friendUserId;
-	response->count = static_cast<int>(std::min<size_t>(messages.size(), MAX_HISTORY_MESSAGES));
+	Packet packet(PacketType::ChatHistoryResponse);
+	packet.WriteUInt32(friendUserId);
+	packet.WriteUInt32(static_cast<uint32_t>(messages.size()));
 
-	for (int i = 0; i < response->count; ++i)
+	for (const auto& msg : messages)
 	{
-		response->entries[i] = messages[i];
+		packet.WriteUInt32(msg.senderUserId);
+		packet.WriteUInt32(msg.targetUserId);
+		packet.WriteString(msg.sender);
+		packet.WriteString(msg.message);
+		packet.WriteUInt32(static_cast<uint32_t>(msg.time));
 	}
 
-	int packetType = PACKET_CHAT_HISTORY;
-	send(clientSocket, (char *)&packetType, sizeof(int), 0);
-	send(clientSocket, (char *)response, sizeof(ChatHistoryResponse), 0);
-
-	delete response;
+	SendPacket(clientSocket, packet);
 }
 
 int CChatServerService::FindClientIdByUserId(int userId)
@@ -1149,6 +1206,22 @@ int CChatServerService::FindClientIdByUserId(int userId)
 	}
 	LeaveCriticalSection(&m_csClients);
 	return clientId;
+}
+
+ClientInfo *CChatServerService::GetClientById(int clientId)
+{
+	ClientInfo *result = nullptr;
+	EnterCriticalSection(&m_csClients);
+	for (auto client : m_clients)
+	{
+		if (client->clientId == clientId)
+		{
+			result = client;
+			break;
+		}
+	}
+	LeaveCriticalSection(&m_csClients);
+	return result;
 }
 
 bool CChatServerService::IsClientAuthenticated(int clientId)
@@ -1197,7 +1270,7 @@ bool CChatServerService::EnsureSQLConnection()
 BOOL CChatServerService::InitializeSQLConnection()
 {
 	CloseSQLConnection();
-	const wchar_t *kDatabaseDirectory = L"C:\\ChatServerDB";
+	const wchar_t *kDatabaseDirectory = L"F:\\VSCMCCS\\ChatServerDB";
 	CreateDirectoryW(kDatabaseDirectory, nullptr);
 	std::wstring dbPath = std::wstring(kDatabaseDirectory) + L"\\ChatAppdb.db";
 	if (sqlite3_open16(dbPath.c_str(), &m_db) != SQLITE_OK)
@@ -1281,7 +1354,7 @@ void CChatServerService::LogSqliteError(const wchar_t *operation)
 	LogError(ss.str().c_str());
 }
 
-BOOL CChatServerService::AuthenticateUser(const wchar_t *username, const wchar_t *passwordHash, int &userId)
+BOOL CChatServerService::AuthenticateUser(const wchar_t *username, const wchar_t *password, int &userId)
 {
 	if (!EnsureSQLConnection())
 	{
@@ -1289,7 +1362,7 @@ BOOL CChatServerService::AuthenticateUser(const wchar_t *username, const wchar_t
 	}
 
 	sqlite3_stmt *stmt = nullptr;
-	const wchar_t *sql = L"SELECT userid FROM Account WHERE username = ? AND password_hash = ?";
+	const wchar_t *sql = L"SELECT userid, password_hash FROM Account WHERE username = ?";
 	if (sqlite3_prepare16_v2(m_db, sql, -1, &stmt, nullptr) != SQLITE_OK)
 	{
 		LogSqliteError(L"sqlite3_prepare16_v2 (AuthenticateUser)");
@@ -1297,16 +1370,19 @@ BOOL CChatServerService::AuthenticateUser(const wchar_t *username, const wchar_t
 	}
 
 	sqlite3_bind_text16(stmt, 1, username, -1, SQLITE_TRANSIENT);
-	sqlite3_bind_text16(stmt, 2, passwordHash, -1, SQLITE_TRANSIENT);
 
 	int rc = sqlite3_step(stmt);
 	BOOL ok = FALSE;
 	if (rc == SQLITE_ROW)
 	{
 		userId = sqlite3_column_int(stmt, 0);
-		ok = TRUE;
+		const wchar_t* storedHash = (const wchar_t*)sqlite3_column_text16(stmt, 1);
+		if (storedHash && VerifyPassword(password, storedHash))
+		{
+			ok = TRUE;
+		}
 	}
-	else if (rc != SQLITE_DONE && rc != SQLITE_ROW)
+	else if (rc != SQLITE_DONE)
 	{
 		LogSqliteError(L"sqlite3_step (AuthenticateUser)");
 	}

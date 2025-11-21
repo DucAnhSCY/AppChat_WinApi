@@ -28,10 +28,12 @@ protected:
 public:
 	afx_msg void OnBnClickedLogin();
 	afx_msg void OnBnClickedRegisterlink();
+	afx_msg void OnBnClickedCheckLogin();
 private:
 	bool PerformLogin(const CString& username, const CString& password);
 	bool SendLoginRequest(SOCKET socket, const CString& username, const CString& password);
 	bool ReceiveLoginResponse(SOCKET socket, int& userId, CString& serverUserName, CString& detail);
+    void UpdatePasswordVisibility(UINT checkBoxId, UINT editControlId);
 protected:
 	virtual BOOL OnInitDialog();
 	virtual void OnOK();

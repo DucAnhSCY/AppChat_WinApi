@@ -5,6 +5,7 @@
 #include <string>
 #include "Struct.h"
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 // Forward declare sqlite3 to avoid including the header here
 struct sqlite3;
@@ -60,19 +61,24 @@ private:
     static DWORD WINAPI ClientThreadProc(LPVOID pParam);
 
     // Message routing
-    void SendToClient(int clientId, const Msg& msg);
+    void SendPacket(SOCKET socket, const Packet& packet);
     void RemoveClient(int clientId);
     void BroadcastUserStatusUpdate();
     void SendLoginResult(SOCKET clientSocket, int success, int userId, const std::wstring& username, const std::wstring& detail);
-    void SendFriendListWithOnlineStatus(SOCKET clientSocket, int userId);
+    void SendFriendList(SOCKET clientSocket, int userId);
     void SendChatHistory(SOCKET clientSocket, int friendUserId, const std::vector<Msg>& messages);
     bool IsClientAuthenticated(int clientId);
     int GetUserIdForClient(int clientId);
     std::wstring GetUsernameForClient(int clientId);
     int FindClientIdByUserId(int userId);
+    ClientInfo* GetClientById(int clientId);
 
     void LogError(const wchar_t* message);
     void LogInfo(const wchar_t* message);
+
+    // Hashing methods
+    BOOL HashPassword(const std::wstring& password, std::wstring& hash);
+    BOOL VerifyPassword(const std::wstring& password, const std::wstring& hash);
 
     // SQLite methods
     BOOL InitializeSQLConnection();

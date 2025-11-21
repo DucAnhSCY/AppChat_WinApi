@@ -10,6 +10,7 @@
 #include <ws2tcpip.h>
 #include <cwctype>
 #include <ctime>
+#include <vector>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -40,6 +41,34 @@ bool RecvAll(SOCKET socket, void* data, int length)
 		}
 		buffer += received;
 		remaining -= received;
+	}
+	return true;
+}
+
+bool ReceivePacket(SOCKET socket, PacketHeader& header, std::vector<char>& payload)
+{
+	if (!RecvAll(socket, &header, sizeof(header))) {
+		return false;
+	}
+	payload.resize(header.size);
+	if (header.size > 0) {
+		if (!RecvAll(socket, payload.data(), static_cast<int>(header.size))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool SendPacket(SOCKET socket, const Packet& packet)
+{
+	PacketHeader header;
+	header.type = packet.GetType();
+	header.size = static_cast<uint32_t>(packet.GetSize());
+	if (!SendAll(socket, &header, sizeof(header))) {
+		return false;
+	}
+	if (header.size > 0) {
+		return SendAll(socket, packet.GetData(), static_cast<int>(header.size));
 	}
 	return true;
 }
@@ -85,7 +114,25 @@ void RegisterDlg::DoDataExchange(CDataExchange* pDX)
 BEGIN_MESSAGE_MAP(RegisterDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_Register, &RegisterDlg::OnBnClickedRegister)
 	ON_BN_CLICKED(IDC_Login_link, &RegisterDlg::OnBnClickedLoginlink)
+	ON_BN_CLICKED(IDC_CHECK_PwdR, &RegisterDlg::OnBnClickedCheckPwdr)
+	ON_BN_CLICKED(IDC_CHECK_CfPwdR, &RegisterDlg::OnBnClickedCheckCfpwdr)
 END_MESSAGE_MAP()
+BOOL RegisterDlg::OnInitDialog()
+{
+	CDialogEx::OnInitDialog();
+	if (CButton* pCheck = reinterpret_cast<CButton*>(GetDlgItem(IDC_CHECK_PwdR)))
+	{
+		pCheck->SetCheck(BST_UNCHECKED);
+	}
+	if (CButton* pCheck = reinterpret_cast<CButton*>(GetDlgItem(IDC_CHECK_CfPwdR)))
+	{
+		pCheck->SetCheck(BST_UNCHECKED);
+	}
+	UpdatePasswordVisibility(IDC_CHECK_PwdR, IDC_password_text);
+	UpdatePasswordVisibility(IDC_CHECK_CfPwdR, IDC_cfpassword_text);
+	return TRUE;
+}
+
 
 
 // RegisterDlg message handlers
@@ -189,42 +236,51 @@ void RegisterDlg::OnBnClickedRegister()
 		return;
 	}
 
-	Msg msg = {};
-	msg.targetUserId = 0;
-	msg.senderUserId = 0;
-	msg.time = std::time(nullptr);
-	wcsncpy_s(msg.sender, username, _TRUNCATE);
-
-	CString payload;
-	payload.Format(L"%s|%s|%s", password.GetString(), phone.GetString(), email.GetString());
-	wcsncpy_s(msg.message, payload, _TRUNCATE);
-
-	int command = static_cast<int>(ClientCommand::CMD_REGISTER);
-	if (!SendAll(regSocket, &command, sizeof(command)) || !SendAll(regSocket, &msg, sizeof(msg))) {
+	Packet packet(PacketType::RegisterRequest);
+	packet.WriteString(std::wstring(username.GetString()));
+	packet.WriteString(std::wstring(password.GetString()));
+	packet.WriteString(std::wstring(phone.GetString()));
+	packet.WriteString(std::wstring(email.GetString()));
+	if (!SendPacket(regSocket, packet)) {
 		MessageBox(L"Unable to send the registration request.", L"Error", MB_ICONERROR);
 		cleanup();
 		return;
 	}
 
-	int packetType = 0;
-	if (!RecvAll(regSocket, &packetType, sizeof(packetType))) {
+	PacketHeader header;
+	std::vector<char> payload;
+	if (!ReceivePacket(regSocket, header, payload)) {
 		MessageBox(L"No response received from the server.", L"Error", MB_ICONERROR);
 		cleanup();
 		return;
 	}
 
-	if (packetType != PACKET_LOGIN_RESULT) {
+	if (header.type != PacketType::LoginResponse) {
 		MessageBox(L"Unexpected response from the server.", L"Error", MB_ICONERROR);
 		cleanup();
 		return;
 	}
 
-	LoginResult result = {};
-	if (!RecvAll(regSocket, &result, sizeof(result))) {
-		MessageBox(L"Failed to receive the registration result.", L"Error", MB_ICONERROR);
+	Packet response(header.type);
+	if (!payload.empty()) {
+		response.SetBuffer(payload.data(), payload.size());
+	}
+	uint32_t success = 0;
+	uint32_t userIdValue = 0;
+	std::wstring returnedUser;
+	std::wstring detailMessage;
+	if (!response.ReadUInt32(success) || !response.ReadUInt32(userIdValue) ||
+		!response.ReadString(returnedUser) || !response.ReadString(detailMessage)) {
+		MessageBox(L"Received malformed registration response.", L"Error", MB_ICONERROR);
 		cleanup();
 		return;
 	}
+
+	LoginResult result = {};
+	result.success = static_cast<int>(success);
+	result.userId = static_cast<int>(userIdValue);
+	wcsncpy_s(result.username, returnedUser.c_str(), _TRUNCATE);
+	wcsncpy_s(result.detail, detailMessage.c_str(), _TRUNCATE);
 
 	cleanup();
 
@@ -241,4 +297,28 @@ void RegisterDlg::OnBnClickedRegister()
 void RegisterDlg::OnBnClickedLoginlink()
 {
 	EndDialog(IDCANCEL);
+}
+
+void RegisterDlg::OnBnClickedCheckPwdr()
+{
+	UpdatePasswordVisibility(IDC_CHECK_PwdR, IDC_password_text);
+}
+
+void RegisterDlg::OnBnClickedCheckCfpwdr()
+{
+	UpdatePasswordVisibility(IDC_CHECK_CfPwdR, IDC_cfpassword_text);
+}
+
+void RegisterDlg::UpdatePasswordVisibility(UINT checkBoxId, UINT editControlId)
+{
+	CButton* pCheck = reinterpret_cast<CButton*>(GetDlgItem(checkBoxId));
+	CEdit* pEdit = reinterpret_cast<CEdit*>(GetDlgItem(editControlId));
+	if (!pCheck || !pEdit)
+	{
+		return;
+	}
+	const bool showText = (pCheck->GetCheck() == BST_CHECKED);
+	pEdit->SetPasswordChar(showText ? 0 : L'*');
+	pEdit->Invalidate();
+	pEdit->UpdateWindow();
 }

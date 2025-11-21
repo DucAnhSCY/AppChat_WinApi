@@ -9,6 +9,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <ctime>
+#include <vector>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -39,6 +40,34 @@ bool RecvAll(SOCKET socket, void* data, int length)
 		}
 		buffer += received;
 		remaining -= received;
+	}
+	return true;
+}
+
+bool ReceivePacket(SOCKET socket, PacketHeader& header, std::vector<char>& payload)
+{
+	if (!RecvAll(socket, &header, sizeof(header))) {
+		return false;
+	}
+	payload.resize(header.size);
+	if (header.size > 0) {
+		if (!RecvAll(socket, payload.data(), static_cast<int>(header.size))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool SendPacket(SOCKET socket, const Packet& packet)
+{
+	PacketHeader header;
+	header.type = packet.GetType();
+	header.size = static_cast<uint32_t>(packet.GetSize());
+	if (!SendAll(socket, &header, sizeof(header))) {
+		return false;
+	}
+	if (header.size > 0) {
+		return SendAll(socket, packet.GetData(), static_cast<int>(header.size));
 	}
 	return true;
 }
@@ -94,10 +123,12 @@ void LoginDlg::DoDataExchange(CDataExchange* pDX)
 BEGIN_MESSAGE_MAP(LoginDlg, CDialogEx)
 	ON_BN_CLICKED(IDC_Login, &LoginDlg::OnBnClickedLogin)
 	ON_BN_CLICKED(IDC_Register_link, &LoginDlg::OnBnClickedRegisterlink)
+	ON_BN_CLICKED(IDC_CHECK_login, &LoginDlg::OnBnClickedCheckLogin)
 END_MESSAGE_MAP()
 
 BEGIN_DISPATCH_MAP(LoginDlg, CDialogEx)
 END_DISPATCH_MAP()
+	
 
 // Note: we add support for IID_ILoginDlg to support typesafe binding
 //  from VBA.  This IID must match the GUID that is attached to the
@@ -221,61 +252,62 @@ bool LoginDlg::PerformLogin(const CString& username, const CString& password)
 
 bool LoginDlg::SendLoginRequest(SOCKET socket, const CString& username, const CString& password)
 {
-	Msg msg = {};
-	msg.targetUserId = 0;
-	msg.senderUserId = 0;
-	msg.time = std::time(nullptr);
-	if (!username.IsEmpty()) {
-		wcsncpy_s(msg.sender, username, _TRUNCATE);
-	}
-	if (!password.IsEmpty()) {
-		wcsncpy_s(msg.message, password, _TRUNCATE);
-	}
-	int command = static_cast<int>(ClientCommand::CMD_LOGIN);
-	if (!SendAll(socket, &command, sizeof(command))) {
-		return false;
-	}
-	return SendAll(socket, &msg, sizeof(msg));
+	Packet packet(PacketType::LoginRequest);
+	packet.WriteString(std::wstring(username.GetString()));
+	packet.WriteString(std::wstring(password.GetString()));
+	return SendPacket(socket, packet);
 }
 
 bool LoginDlg::ReceiveLoginResponse(SOCKET socket, int& userId, CString& serverUserName, CString& detail)
+
+
 {
-	int packetType = 0;
-	while (true) {
-		if (!RecvAll(socket, &packetType, sizeof(packetType))) {
-			detail = L"Lost connection to the server.";
-			return false;
+	PacketHeader header;
+	std::vector<char> payload;
+	while (ReceivePacket(socket, header, payload)) {
+		Packet packet(header.type);
+		if (!payload.empty()) {
+			packet.SetBuffer(payload.data(), payload.size());
 		}
-
-		if (packetType == PACKET_LOGIN_RESULT) {
-			LoginResult result = {};
-			if (!RecvAll(socket, &result, sizeof(result))) {
-				detail = L"Lost connection while receiving the login response.";
+		switch (header.type) {
+		case PacketType::LoginResponse:
+		{
+			uint32_t success = 0;
+			uint32_t userIdValue = 0;
+			std::wstring username;
+			std::wstring detailMessage;
+			if (!packet.ReadUInt32(success) || !packet.ReadUInt32(userIdValue) ||
+				!packet.ReadString(username) || !packet.ReadString(detailMessage)) {
+				detail = L"Received malformed login response.";
 				return false;
 			}
-
-			userId = result.userId;
-			serverUserName = result.username;
-			detail = result.detail;
-			return result.success == 1;
+			userId = static_cast<int>(userIdValue);
+			serverUserName = username.c_str();
+			detail = detailMessage.c_str();
+			return success == 1;
 		}
-		else if (packetType == PACKET_USER_LIST) {
-			UserListUpdate discard;
-			if (!RecvAll(socket, &discard, sizeof(discard))) {
-				detail = L"Unable to synchronize the user list.";
-				return false;
-			}
-		}
-		else if (packetType == PACKET_MESSAGE) {
-			Msg discard;
-			if (!RecvAll(socket, &discard, sizeof(discard))) {
-				detail = L"Unable to synchronize messages.";
-				return false;
-			}
-		}
-		else {
-			detail = L"Received an unknown packet from the server.";
-			return false;
+		default:
+			break;
 		}
 	}
+	detail = L"Lost connection to the server.";
+	return false;
+}
+void LoginDlg::OnBnClickedCheckLogin()
+{
+	UpdatePasswordVisibility(IDC_CHECK_login, IDC_password_text);
+}
+
+void LoginDlg::UpdatePasswordVisibility(UINT checkBoxId, UINT editControlId)
+{
+	CButton* pCheck = reinterpret_cast<CButton*>(GetDlgItem(checkBoxId));
+	CEdit* pEdit = reinterpret_cast<CEdit*>(GetDlgItem(editControlId));
+	if (!pCheck || !pEdit)
+	{
+		return;
+	}
+	const bool showText = (pCheck->GetCheck() == BST_CHECKED);
+	pEdit->SetPasswordChar(showText ? 0 : L'*');
+	pEdit->Invalidate();
+	pEdit->UpdateWindow();
 }

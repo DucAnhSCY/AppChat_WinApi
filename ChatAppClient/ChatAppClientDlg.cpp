@@ -18,6 +18,7 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <algorithm>
 #pragma comment(lib, "Shell32.lib")
 #ifdef _DEBUG
 #define new DEBUG_NEW
@@ -37,6 +38,55 @@ bool SendAll(SOCKET socket, const void *data, int length)
 			return false;
 		}
 		total += sent;
+	}
+	return true;
+}
+
+bool RecvAll(SOCKET socket, void *data, int length)
+{
+	char *buffer = static_cast<char *>(data);
+	int total = 0;
+	while (total < length)
+	{
+		int received = recv(socket, buffer + total, length - total, 0);
+		if (received <= 0)
+		{
+			return false;
+		}
+		total += received;
+	}
+	return true;
+}
+
+bool ReceivePacket(SOCKET socket, PacketHeader &header, std::vector<char> &payload)
+{
+	if (!RecvAll(socket, &header, sizeof(header)))
+	{
+		return false;
+	}
+	payload.resize(header.size);
+	if (header.size > 0)
+	{
+		if (!RecvAll(socket, payload.data(), static_cast<int>(header.size)))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+bool SendPacket(SOCKET socket, const Packet &packet)
+{
+	PacketHeader header;
+	header.type = packet.GetType();
+	header.size = static_cast<uint32_t>(packet.GetSize());
+	if (!SendAll(socket, &header, sizeof(header)))
+	{
+		return false;
+	}
+	if (header.size > 0)
+	{
+		return SendAll(socket, packet.GetData(), static_cast<int>(header.size));
 	}
 	return true;
 }
@@ -279,55 +329,140 @@ UINT CChatAppClientDlg::ClientThreadProc(LPVOID pParam)
 	ClientInfo* pClientInfo = (ClientInfo*)pParam;
 	CChatAppClientDlg* pDlg = (CChatAppClientDlg*)pClientInfo->pDlg;
 
-	while (true) {
-		int packetType;
-		int ret = recv(pClientInfo->clientSocket, (char*)&packetType, sizeof(int), 0);
-		
-		if (ret <= 0) {
+	bool keepRunning = true;
+	while (keepRunning) {
+		PacketHeader header;
+		std::vector<char> payload;
+		if (!ReceivePacket(pClientInfo->clientSocket, header, payload)) {
 			break;
 		}
-		
-		if (packetType == PACKET_LOGIN_RESULT) {
+
+		Packet packet(header.type);
+		if (!payload.empty()) {
+			packet.SetBuffer(payload.data(), payload.size());
+		}
+
+		switch (header.type) {
+		case PacketType::LoginResponse:
+		{
+			uint32_t success = 0;
+			uint32_t userId = 0;
+			std::wstring username;
+			std::wstring detail;
+			if (!packet.ReadUInt32(success) || !packet.ReadUInt32(userId) ||
+				!packet.ReadString(username) || !packet.ReadString(detail)) {
+				keepRunning = false;
+				break;
+			}
+
 			LoginResult loginResult = {};
-			ret = recv(pClientInfo->clientSocket, (char*)&loginResult, sizeof(loginResult), 0);
-			if (ret > 0) {
-				pDlg->HandleLoginResult(loginResult);
+			loginResult.success = static_cast<int>(success);
+			loginResult.userId = static_cast<int>(userId);
+			if (!username.empty()) {
+				wcsncpy_s(loginResult.username, username.c_str(), _TRUNCATE);
 			}
-			else {
+			if (!detail.empty()) {
+				wcsncpy_s(loginResult.detail, detail.c_str(), _TRUNCATE);
+			}
+			pDlg->HandleLoginResult(loginResult);
+			break;
+		}
+		case PacketType::FriendList:
+		{
+			uint32_t friendCount = 0;
+			if (!packet.ReadUInt32(friendCount)) {
+				keepRunning = false;
 				break;
 			}
-		}
-		else if (packetType == PACKET_MESSAGE) {
-			Msg msg;
-			ret = recv(pClientInfo->clientSocket, (char*)&msg, sizeof(msg), 0);
-			
-			if (ret > 0) {
-				pDlg->AddMessageToList(msg);
+			UserListUpdate userList = {};
+			userList.count = static_cast<int>(std::min<uint32_t>(friendCount, MAX_CLIENTS));
+			for (uint32_t i = 0; i < friendCount; ++i) {
+				uint32_t friendId = 0;
+				std::wstring friendName;
+				uint32_t isOnline = 0;
+				if (!packet.ReadUInt32(friendId) || !packet.ReadString(friendName) || !packet.ReadUInt32(isOnline)) {
+					keepRunning = false;
+					break;
+				}
+				if (i < MAX_CLIENTS) {
+					userList.users[i].userId = static_cast<int>(friendId);
+					userList.users[i].isOnline = static_cast<int>(isOnline);
+					wcsncpy_s(userList.users[i].username, friendName.c_str(), _TRUNCATE);
+				}
 			}
-			else {
+			if (!keepRunning) {
 				break;
 			}
+			pDlg->UpdateUserList(userList);
+			break;
 		}
-		else if (packetType == PACKET_USER_LIST) {
-			UserListUpdate userList;
-			ret = recv(pClientInfo->clientSocket, (char*)&userList, sizeof(userList), 0);
-			
-			if (ret > 0) {
-				pDlg->UpdateUserList(userList);
-			}
-			else {
+		case PacketType::ChatMessage:
+		{
+			uint32_t senderUserId = 0;
+			uint32_t receiverUserId = 0;
+			std::wstring senderName;
+			std::wstring message;
+			uint32_t timestamp = 0;
+			if (!packet.ReadUInt32(senderUserId) || !packet.ReadUInt32(receiverUserId) ||
+				!packet.ReadString(senderName) || !packet.ReadString(message) ||
+				!packet.ReadUInt32(timestamp)) {
+				keepRunning = false;
 				break;
 			}
+
+			Msg msg = {};
+			msg.senderUserId = static_cast<int>(senderUserId);
+			msg.targetUserId = static_cast<int>(receiverUserId);
+			msg.time = static_cast<time_t>(timestamp);
+			if (!senderName.empty()) {
+				wcsncpy_s(msg.sender, senderName.c_str(), _TRUNCATE);
+			}
+			wcsncpy_s(msg.message, message.c_str(), _TRUNCATE);
+			pDlg->AddMessageToList(msg);
+			break;
 		}
-		else if (packetType == PACKET_CHAT_HISTORY) {
+		case PacketType::ChatHistoryResponse:
+		{
+			uint32_t friendUserId = 0;
+			uint32_t entryCount = 0;
+			if (!packet.ReadUInt32(friendUserId) || !packet.ReadUInt32(entryCount)) {
+				keepRunning = false;
+				break;
+			}
 			ChatHistoryResponse history = {};
-			ret = recv(pClientInfo->clientSocket, (char*)&history, sizeof(history), 0);
-			if (ret > 0) {
-				pDlg->HandleChatHistory(history);
+			history.friendUserId = static_cast<int>(friendUserId);
+			history.count = static_cast<int>(std::min<uint32_t>(entryCount, MAX_HISTORY_MESSAGES));
+			for (uint32_t i = 0; i < entryCount; ++i) {
+				uint32_t senderId = 0;
+				uint32_t targetId = 0;
+				std::wstring sender;
+				std::wstring msgText;
+				uint32_t epoch = 0;
+				if (!packet.ReadUInt32(senderId) || !packet.ReadUInt32(targetId) ||
+					!packet.ReadString(sender) || !packet.ReadString(msgText) ||
+					!packet.ReadUInt32(epoch)) {
+					keepRunning = false;
+					break;
+				}
+				if (i < MAX_HISTORY_MESSAGES) {
+					history.entries[i].senderUserId = static_cast<int>(senderId);
+					history.entries[i].targetUserId = static_cast<int>(targetId);
+					history.entries[i].time = static_cast<time_t>(epoch);
+					wcsncpy_s(history.entries[i].sender, sender.c_str(), _TRUNCATE);
+					wcsncpy_s(history.entries[i].message, msgText.c_str(), _TRUNCATE);
+				}
 			}
-			else {
+			if (!keepRunning) {
 				break;
 			}
+			pDlg->HandleChatHistory(history);
+			break;
+		}
+		default:
+			break;
+		}
+		if (!keepRunning) {
+			break;
 		}
 	}
 	
@@ -347,19 +482,10 @@ bool CChatAppClientDlg::SendLoginRequest()
 		return false;
 	}
 
-	Msg msg = {};
-	msg.targetUserId = 0;
-	msg.senderUserId = m_authenticatedUserId;
-	msg.time = std::time(nullptr);
-	wcsncpy_s(msg.sender, app.m_authenticatedUsername, _TRUNCATE);
-	wcsncpy_s(msg.message, app.m_authenticatedPasswordHash, _TRUNCATE);
-
-	int command = static_cast<int>(ClientCommand::CMD_LOGIN);
-	if (!SendAll(m_listenSocket, &command, sizeof(command)))
-	{
-		return false;
-	}
-	return SendAll(m_listenSocket, &msg, sizeof(msg));
+	Packet packet(PacketType::LoginRequest);
+	packet.WriteString(std::wstring(app.m_authenticatedUsername.GetString()));
+	packet.WriteString(std::wstring(app.m_authenticatedPasswordHash.GetString()));
+	return SendPacket(m_listenSocket, packet);
 }
 void CChatAppClientDlg::HandleLoginResult(const LoginResult& result)
 {
@@ -419,8 +545,6 @@ void CChatAppClientDlg::OnBnClickedButtonSend()
 	}
 
 	msg.targetUserId = static_cast<int>(list_user.GetItemData(selectedIndex));
-	ClientCommand command = ClientCommand::CMD_PRIVATE_MESSAGE;
-	
 	int index = list_message.GetItemCount();
 	CString senderDisplay;
 	if (msg.sender[0] != L'\0') {
@@ -434,9 +558,10 @@ void CChatAppClientDlg::OnBnClickedButtonSend()
 	list_message.SetItemText(index, 1, displayTime.Format(L"%H:%M:%S"));
 	list_message.SetItemText(index, 2, CString(msg.message));
 
-	int commandValue = static_cast<int>(command);
-	SendAll(m_listenSocket, &commandValue, sizeof(commandValue));
-	SendAll(m_listenSocket, &msg, sizeof(msg));
+	Packet packet(PacketType::ChatMessage);
+	packet.WriteUInt32(static_cast<uint32_t>(msg.targetUserId));
+	packet.WriteString(std::wstring(msg.message));
+	SendPacket(m_listenSocket, packet);
 	
 	SetDlgItemText(IDC_EDIT_SEND, L"");
 }
@@ -665,20 +790,9 @@ bool CChatAppClientDlg::RequestChatHistory(int friendUserId)
 		return false;
 	}
 
-	Msg request = {};
-	request.targetUserId = friendUserId;
-	request.senderUserId = m_authenticatedUserId;
-	request.time = std::time(nullptr);
-	if (!m_authenticatedUsername.IsEmpty()) {
-		wcsncpy_s(request.sender, m_authenticatedUsername, _TRUNCATE);
-	}
-
-	int command = static_cast<int>(ClientCommand::CMD_CHAT_HISTORY_REQUEST);
-	if (!SendAll(m_listenSocket, &command, sizeof(command)))
-	{
-		return false;
-	}
-	return SendAll(m_listenSocket, &request, sizeof(request));
+	Packet packet(PacketType::ChatHistoryRequest);
+	packet.WriteUInt32(static_cast<uint32_t>(friendUserId));
+	return SendPacket(m_listenSocket, packet);
 }
 void CChatAppClientDlg::HandleChatHistory(const ChatHistoryResponse& response)
 {

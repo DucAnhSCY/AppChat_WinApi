@@ -25,6 +25,11 @@ protected:
 public:
 	afx_msg void OnBnClickedRegister();
 	afx_msg void OnBnClickedLoginlink();
+	afx_msg void OnBnClickedCheckPwdr();
+	afx_msg void OnBnClickedCheckCfpwdr();
 private:
 	CString m_registeredUsername;
+	void UpdatePasswordVisibility(UINT checkBoxId, UINT editControlId);
+protected:
+	virtual BOOL OnInitDialog();
 };
